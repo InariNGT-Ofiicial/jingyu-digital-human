@@ -37,6 +37,13 @@ class DeepSeekController:
         import aiohttp
 
         messages = phone_messages(text, history)
+        # The API sees past assistant messages as examples of the required output.
+        # Keep the spoken prefix (including after interruption) inside the same schema.
+        for message in messages:
+            if message["role"] == "assistant":
+                message["content"] = json.dumps(
+                    {"reply": message["content"], "gesture": "none"}, ensure_ascii=False
+                )
         messages[0]["content"] += (
             '\n只输出 JSON 对象，例如 {"reply":"可以先把相机挪到窗边。","gesture":"acknowledge"}。'
             "reply 是可以直接朗读的回答。gesture 最多选一个与当轮话意自然贴合的动作，平常选 none。可选动作："
@@ -51,17 +58,28 @@ class DeepSeekController:
             "stream": False,
         }
         try:
-            async with http.post(
-                ENDPOINT, json=payload, headers={"Authorization": f"Bearer {self.key}"},
-                timeout=aiohttp.ClientTimeout(total=12), allow_redirects=False,
-            ) as response:
-                if response.status != 200:
-                    raise RuntimeError(f"DeepSeek 中控请求失败（HTTP {response.status}），请检查服务端密钥、额度和模型配置。")
-                data = await response.json()
-            choice = data["choices"][0]
-            if choice.get("finish_reason") != "stop":
-                raise ValueError("incomplete")
-            result = json.loads(choice["message"]["content"])
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + 12
+            for attempt in range(2):
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    raise asyncio.TimeoutError()
+                async with http.post(
+                    ENDPOINT, json=payload, headers={"Authorization": f"Bearer {self.key}"},
+                    timeout=aiohttp.ClientTimeout(total=remaining, ceil_threshold=float("inf")), allow_redirects=False,
+                ) as response:
+                    if response.status != 200:
+                        raise RuntimeError(f"DeepSeek 中控请求失败（HTTP {response.status}），请检查服务端密钥、额度和模型配置。")
+                    data = await response.json()
+                choice = data["choices"][0]
+                if choice.get("finish_reason") != "stop":
+                    raise ValueError("incomplete")
+                content = choice["message"]["content"]
+                if attempt == 0 and isinstance(content, str) and not content.strip():
+                    messages[0]["content"] += '\n请务必在 JSON 的 "reply" 字段里写回答，动作不确定时填 "none"。'
+                    continue
+                break
+            result = json.loads(content)
             reply = result["reply"]
             if not isinstance(reply, str) or not reply.strip():
                 raise ValueError("empty")

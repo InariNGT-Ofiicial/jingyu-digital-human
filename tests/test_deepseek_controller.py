@@ -40,7 +40,8 @@ class PhoneProtocolTests(unittest.IsolatedAsyncioTestCase):
             status, result = self.queue.pop(0)
             if status != 200:
                 return web.Response(status=status, text="private-error-detail")
-            return web.json_response({"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(result)}}]})
+            content = result if isinstance(result, str) else json.dumps(result)
+            return web.json_response({"choices": [{"finish_reason": "stop", "message": {"content": content}}]})
 
         async def voice(req):
             self.spoken.append((await req.json())["text"])
@@ -91,8 +92,23 @@ class PhoneProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second[-1]["type"], "end")
         self.assertNotIn("gesture", [e["type"] for e in second])
         messages = self.requests[1]["messages"]
-        self.assertEqual([m["content"] for m in messages[1:]], [questions[0], reply, questions[1]])
+        self.assertEqual([m["role"] for m in messages[1:]], ["user", "assistant", "user"])
+        self.assertEqual([messages[1]["content"], messages[3]["content"]], questions)
+        self.assertEqual(json.loads(messages[2]["content"]), {"reply": reply, "gesture": "none"})
         self.assertEqual(self.requests[0]["response_format"], {"type": "json_object"})
+
+    async def test_blank_json_response_retries_once_before_speech(self):
+        reply = "是在一九〇四年提出的。"
+        self.queue.extend([(200, " " * 15), (200, {"reply": reply, "gesture": "none"})])
+        recovered = await self.turn(1, "那它是哪一年提出的？请用一句话告诉我。")
+        self.assertEqual(recovered[-1]["type"], "end")
+        self.assertEqual(len(self.requests), 2)
+        self.assertEqual("".join(self.spoken), reply)
+        self.queue.extend([(200, " " * 17), (200, " " * 15)])
+        failed = await self.turn(2, "你还记得具体是哪个月份吗？")
+        self.assertEqual(failed[-1]["type"], "error")
+        self.assertEqual(len(self.requests), 4)
+        self.assertEqual("".join(self.spoken), reply)
 
     async def test_cached_turn_and_cloud_errors(self):
         events = await self.turn(1, "挥挥手")
