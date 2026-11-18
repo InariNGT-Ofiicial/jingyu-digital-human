@@ -2,7 +2,7 @@
 
 > DeepseekChan 还托着腮，你已经问了下一句。她可以直接接话，让眼前这段动作自然播完。
 
-鲸语让你用自己的角色图、动作和音色搭一个能听、能说、能回应的二次元数字人。H3 提前拍好角色表演，交互时浏览器连续播放这些动作，鲸语根据对话选择下一段。这样，角色可以保持原有画风，开口也无需等视频模型生成下一帧。
+鲸语让你用自己的角色图、动作和音色搭一个能听、能说、能回应的二次元数字人。**MiniMax H3 负责角色表演**。它把角色图、姿态引导和动作描述变成能衔接的镜头。**DeepSeek API 可以担任实时中控**，听到新问题时组织回答，并从现有片段里选一个合适的动作。浏览器播放镜头，CosyVoice2 合成当下这句话。于是角色还在回正时，声音就能先接上。
 
 **第一个已验证场景是手机浏览器视频电话。** 接通后可以围绕同一件事连续追问，也可以在角色说到一半时插话。一个实例同时服务一个通话席位。默认角色是 DeepseekChan。公开仓库提供可自行生成的示例机器人、动作工作流和通话代码，搭建自己的角色时需要准备角色素材、参考音色和模型权重。
 
@@ -10,9 +10,9 @@
 
 | 积木 | 使用的模型或代码 | 交给下一步的内容 |
 |---|---|---|
-| 表演 | Qwen3-VL 编码参考图和动作描述，H3 Ref2VA 生成动作 | 固定机位、首尾能衔接的动作片段，导入浏览器播放器 |
+| 表演 | MiniMax H3 Base Ref2VA 生成动作，Qwen3-VL-32B 编码参考图和动作描述 | 固定机位、首尾能衔接的动作片段，导入浏览器播放器 |
 | 听觉 | 浏览器检测说话和停顿，Qwen3-ASR 转写 | 当前轮的文字送入鲸语路由 |
-| 应答 | 鲸语匹配台词和动作意图，Qwen2.5 处理开放问题 | 预设语音键，或结合近期对话生成的回答文字 |
+| 中控 | 鲸语先匹配明确预设。开放问题由 DeepSeek API 同时决定回答与动作，也可选择原有的本地 Qwen2.5 模式 | 命中时给出预设语音键。现答返回结合上下文的文字，DeepSeek 还可附一个动作名 |
 | 声音 | 预设台词读取缓存，现答由 CosyVoice2 分段合成 | 可以连续播放的音频和逐句字幕所需的文本位置 |
 | 动作与打断 | 浏览器动作调度器、音频播放器和轮次控制 | 新一轮可以立即停止旧回答，当前动作仍能在片段边界自然切换 |
 
@@ -40,16 +40,17 @@ flowchart LR
   vad -->|"WebSocket · 16 kHz PCM"| asr["Qwen3-ASR 识别"]
   asr --> route["鲸语路由"]
   route -->|"命中合适台词"| bank["缓存语音与动作意图"]
-  route -->|"开放问题"| llm["近期对话 + Qwen2.5"]
+  route -->|"开放问题和近期对话"| llm["DeepSeek API 或本地 Qwen2.5"]
+  llm -->|"DeepSeek 可选动作"| player["浏览器动作播放器"]
   llm -->|"按语义分段"| voice["CosyVoice2 合成"]
   bank --> phone["手机声音与字幕"]
   voice -->|"分段音频"| phone
-  h3["H3 离线制作"] -->|"九段竖屏 H.264"| player["手机动作播放器"]
+  h3["MiniMax H3 离线制作"] -->|"九段竖屏 H.264"| player
   route -->|"状态与动作意图"| player
 ```
 
 1. **听到一句完整的话。** 浏览器请求回声消除，用播放参考信号辅助判断外放回声。麦克风重采样成 16 kHz 单声道 PCM。一次短暂停顿可以先触发识别草稿，说话继续就放弃相应的预答。最终提交时，Qwen3-ASR-1.7B-hf 把整句转成文字。输入键盘文字时从路由开始。[麦克风与判停](web/call.js) · [回声参考](web/duplex.js) · [服务端](server.py)
-2. **决定用预设还是现答。** “挥挥手”这类明确意图命中台词库时，服务端发回录音键和动作意图。问怎么拍猫、再追问窗帘时，鲸语将当轮文字、近期对话和纠正过的条件交给 Qwen2.5-1.5B-Instruct。挂断会结束这次会话的记忆。可选的 JEV 路由仅在显式启用后调用外部服务，默认路径在本机运行。[台词库](dialogue-bank.json) · [路由](router.py) · [上下文](phone_context.py)
+2. **决定用预设还是现答。** “挥挥手”命中台词库，服务端直接发回录音键和动作意图。问怎么拍猫、再追问窗帘时，DeepSeek 模式只在正式提交这一轮后，把文字与近期对话发到官方 API，一次取回 `reply`（朗读文本）和 `gesture`（可为空）。例如 `acknowledge` 让播放器在片段边界选择点头，冷却期间则继续自然待机。用户打断时，下一轮上下文只保留估计已听到的回答。挂断会结束这次会话的记忆。本地模式保留 Qwen2.5-1.5B-Instruct，也可显式启用 JEV 做预设匹配。[DeepSeek 中控](deepseek_controller.py) · [台词库](dialogue-bank.json) · [上下文](phone_context.py)
 3. **把回答说出来。** 预设走缓存 WAV。现答按语义切成可连续朗读的短句，电话进程逐段请求合成服务的 `POST /speak`。CosyVoice2-0.5B 结合文字与参考音色生成语音符号，Flow 生成声学特征，HiFT 声码器输出 24 kHz 波形。服务端用 `voice_part` 把音频和对应的累计字符位置送回浏览器，手机一边播放前段，一边接收后段。字幕根据音频播放时钟在底部逐句显示。[合成服务](synthesis.py) · [播放与字幕](client.js)
 4. **让动作接得上。** 准备素材时，Qwen3-VL-32B 编码参考图和动作描述。H3 Ref2VA 配合 Turbo v4 LoRA 先用四步看动作，二采读回缓存、做三维潜空间放大和十二步细化，再由视频 VAE 解码。当电话接通，浏览器根据倾听、思考、说话等状态和重复间隔选择现有片段。角色还在前倾时声音就能接入，画面在片段边界转场。当前路线使用动作片中的面部表情，逐字口型未同步。[H3 工作流](workflows/README.md) · [动作策略](web/motion-policy.json) · [调度器](web/motion-director.js)
 5. **插话之后接着聊。** 确认来电者开始说话时，浏览器停止旧音频并清空字幕，通知服务器切换轮次；旧轮迟到的结果会被丢弃。已经开始播放的分段用于估算已听到的文字范围，下一轮根据这段上下文接话。复盘里的“末音到首声”是浏览器估算，受判停、模型、网络和播放设备影响。[通话协议处理](server.py) · [打断测试](tests/test_interrupted_dialogue.py)
@@ -68,7 +69,7 @@ flowchart LR
 | 倾听 | listen.mp4 | 托腮思考 | think.mp4 |
 | 浅笑 | smile.mp4 | | |
 
-已有视频可以直接导入。需要自己生成动作时，看 [H3 挥手工作流](workflows/README.md)。
+已有视频可以直接导入。要自己生成动作，先在云端 ComfyUI 提交 MiniMax H3 首采，再用同一份潜变量做二采，把导出的 MP4 作为 `wave.mp4` 导入。仓库附有这条挥手工作流的两份可执行 JSON，其他动作按各自姿势和描述制作。[MiniMax H3 工作流与模型来源](workflows/README.md)
 
 ## 接入语音和对话
 
@@ -77,8 +78,21 @@ flowchart LR
 | 模型 | 实际职责 | 默认目录 |
 |---|---|---|
 | [Qwen3-ASR-1.7B-hf](https://huggingface.co/Qwen/Qwen3-ASR-1.7B-hf) | 将浏览器的 16 kHz 单声道语音转成文字 | .local/models/asr |
-| [Qwen2.5-1.5B-Instruct](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct) | 判断短句是否适合预设，为连续追问生成带上下文的回答 | .local/models/decision |
+| [DeepSeek API](https://api-docs.deepseek.com/) | 在线中控，接收转写与近期文字上下文，同时给出回答和可选动作 | 服务端环境变量，无需下载对话权重 |
+| [Qwen2.5-1.5B-Instruct](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct) | 本地中控，判断短句是否适合预设，为连续追问生成带上下文的回答 | .local/models/decision |
 | [CosyVoice2-0.5B](https://huggingface.co/FunAudioLLM/CosyVoice2-0.5B) | 从文字、参考音色生成 24 kHz 语音，整句按语义分段衔接播放 | .local/models/cosyvoice |
+
+### 选择中控
+
+要使用 DeepSeek，在电话和语音进程的环境中都设置 `JINGYU_CONTROLLER=deepseek`。只有运行 `server.py` 的进程需要密钥。在它的 Bash 终端按下面的方式输入，输入内容不会显示在屏幕或命令历史中。
+
+```bash
+export JINGYU_CONTROLLER=deepseek
+read -rsp 'DeepSeek API key: ' DEEPSEEK_API_KEY && echo
+export DEEPSEEK_API_KEY
+```
+
+服务端以 `deepseek-flash` 请求 `https://api.deepseek.com/chat/completions`，关闭思考模式并要求 JSON 输出。可用 `JINGYU_DEEPSEEK_MODEL` 指定账户支持的模型。上行内容为确认过的文字和对话上下文，麦克风音频交给实例本地的 ASR。请求超时或密钥、额度异常时，界面显示原因。使用本地 Qwen2.5 时，两个进程都设置 `JINGYU_CONTROLLER=local`。省略设置时，有密钥的进程选择 DeepSeek，其余进程选择本地模式。[模型与调用方式](https://api-docs.deepseek.com/) · [JSON 输出](https://api-docs.deepseek.com/guides/json_mode/)
 
 ### 在云实例上部署
 
@@ -98,11 +112,16 @@ python3.10 -m venv .local/call-env
 .local/call-env/bin/pip install torch==2.8.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
 .local/call-env/bin/pip install -r requirements-call.txt
 .local/call-env/bin/hf download Qwen/Qwen3-ASR-1.7B-hf --local-dir .local/models/asr
-.local/call-env/bin/hf download Qwen/Qwen2.5-1.5B-Instruct --local-dir .local/models/decision
 .local/call-env/bin/hf download FunAudioLLM/CosyVoice2-0.5B --local-dir .local/models/cosyvoice
 git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git .local/CosyVoice
 git -C .local/CosyVoice checkout 074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc
 git -C .local/CosyVoice submodule update --init --recursive
+```
+
+本地中控还需下载 Qwen2.5。使用 DeepSeek 中控时可直接准备下面的语音环境。
+
+```sh
+.local/call-env/bin/hf download Qwen/Qwen2.5-1.5B-Instruct --local-dir .local/models/decision
 ```
 
 按 [CosyVoice 安装说明](https://github.com/FunAudioLLM/CosyVoice/tree/074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc) 配好独立语音环境，包括 Matcha-TTS、语音前端与 CUDA 版 PyTorch。确认该环境能用 `CosyVoice2-0.5B` 生成一段声音，然后安装 `aiohttp==3.12.15`、`transformers==4.51.3`。把一段有权使用的人声 WAV 放到 `.local/reference.wav`。

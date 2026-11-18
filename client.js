@@ -134,6 +134,10 @@ ws.onmessage=ev=>{
  }
  if(e.route){r.route=e.route;r.selector=e.selector??r.selector;state(e.route)}
  if(e.type==='thinking')return;
+ if(e.type==='gesture'){
+  motion.request(e.gesture,r.id,r.inputStarted,{explicit:false,priority:1});
+  return;
+ }
  if(e.reply){r.reply=e.reply;if(!portrait)$('#answer').textContent=e.reply}
  if(e.type==='cached'){
   r.key=e.key;r.cachedAt=performance.now();r.complete=true;r.route=e.selector==='exact'?'预设直播':'语义选预设';

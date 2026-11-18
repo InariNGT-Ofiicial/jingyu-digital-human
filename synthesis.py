@@ -5,11 +5,11 @@ import numpy as np
 from aiohttp import web
 
 from settings import DECISION, COSY_MODEL, COSY_SOURCE, REFERENCE, VOICE_PORT, LOCAL
+from deepseek_controller import provider
 sys.path[:0]=[str(COSY_SOURCE),str(COSY_SOURCE/'third_party/Matcha-TTS')]
 import torch
 from cosyvoice.cli.cosyvoice import AutoModel
 from speech_decode import SpeechDecoder
-from phone_chat import PhoneChat
 
 torch.set_num_threads(2)
 torch.set_num_interop_threads(1)
@@ -56,9 +56,12 @@ async def main():
     for line in ['你好呀，欢迎来聊天。','今天天气刚好，适合出去散散步。']:
         start=time.monotonic(); b=await asyncio.to_thread(render,line)
         print('warm',round(time.monotonic()-start,3),len(b)/48000,flush=True)
-    chat=PhoneChat(DECISION)
-    for q in ['你好','现在适合聊点什么？']:
-        print('chat warm',await asyncio.to_thread(chat.answer,q,[]),flush=True)
+    chat=None
+    if provider()=='local':
+        from phone_chat import PhoneChat
+        chat=PhoneChat(DECISION)
+        for q in ['你好','现在适合聊点什么？']:
+            print('chat warm',await asyncio.to_thread(chat.answer,q,[]),flush=True)
     lock=asyncio.Lock()
     async def respond(req):
         d=await req.json()
@@ -73,7 +76,8 @@ async def main():
         async with lock:
             pcm=await asyncio.to_thread(render,text)
         return web.Response(body=pcm,content_type='application/octet-stream')
-    app=web.Application();app.router.add_post('/speak',speak);app.router.add_post('/answer',respond)
+    app=web.Application();app.router.add_post('/speak',speak)
+    if chat is not None:app.router.add_post('/answer',respond)
     runner=web.AppRunner(app);await runner.setup()
     await web.TCPSite(runner,'127.0.0.1',VOICE_PORT).start()
     print('READY',flush=True);await asyncio.Event().wait()
