@@ -30,7 +30,11 @@ const director=motion.director;
 if(!portrait)await Promise.all(config.audio.slice(0,16).map(clip));
 const ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws');await new Promise((ok,fail)=>{ws.onopen=ok;ws.onerror=fail});
 window.addEventListener('pagehide',()=>ws.close(1000,'leaving stage'),{once:true});
-$('#source').textContent=config.jev?'预设库 · Jev 可用':'预设库 · 本地选择';
+if(config.controller==='deepseek'){
+ $('#source').textContent='预设库 · DeepSeek 中控';
+}else{
+ $('#source').textContent=config.jev?'预设库 · Jev 可用':'预设库 · 本地选择';
+}
 let seq=0,active=null,rec=null,listeningSince=null;
 let draftAudio=null,draftKey=0;
 const logs=window.turnLogs=[];

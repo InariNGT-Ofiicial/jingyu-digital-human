@@ -196,7 +196,13 @@ async def main():
         if os.environ.get('CALL_FAST_A3')=='1':await asyncio.to_thread(models.answer,'现在适合聊天吗？',[],True)
     manifest=json.loads((LOCAL/'audio/manifest.json').read_text())
     async def home(req):return web.Response(text=(ROOT/'stage.html').read_text(encoding='utf8').replace('DeepseekChan',NAME),content_type='text/html')
-    async def config(req):return web.json_response(dict(audio=[r['id'] for r in manifest],audioHashes={r['id']:r['sha256'][:16] for r in manifest},jev=jev and controller is None))
+    async def config(req):
+        return web.json_response(dict(
+            audio=[r['id'] for r in manifest],
+            audioHashes={r['id']:r['sha256'][:16] for r in manifest},
+            controller='deepseek' if controller is not None else 'local',
+            jev=jev and controller is None,
+        ))
     mobile=MobileAccess(ROOT,[r['id'] for r in manifest])
     app=web.Application(middlewares=[mobile.guard]);app['http']=aiohttp.ClientSession();app['models']=models;app['operator']=[None]
     app['controller']=controller
